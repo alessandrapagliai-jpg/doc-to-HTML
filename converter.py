@@ -227,3 +227,232 @@ def paragraph_to_html(paragraph: Paragraph) -> str:
                 parts.append(
                     f'<a href="{html.escape(url, quote=True)}">{html_entities(text)}</a>'
                 )
+            continue
+
+        if tag == "fldSimple":
+            instr = child.get(qn("w:instr")) or ""
+            url = _extract_url_from_instr(instr)
+            text = "".join(
+                node.text for node in child.iter()
+                if node.tag.endswith("}t") and node.text
+            ).strip()
+
+            if text:
+                parts.append(
+                    f'<a href="{html.escape(url, quote=True)}">{html_entities(text)}</a>'
+                )
+            continue
+
+        if tag == "r":
+            fldChar = child.find(".//w:fldChar", NS)
+            if fldChar is not None:
+                fld_type = fldChar.get(qn("w:fldCharType"))
+                if fld_type == "begin":
+                    flush_field()
+                    in_field = True
+                    continue
+                if fld_type == "separate":
+                    field_url = _extract_url_from_instr(field_instr)
+                    after_separate = True
+                    continue
+                if fld_type == "end":
+                    flush_field()
+                    continue
+
+            instrText = child.find(".//w:instrText", NS)
+            if instrText is not None and in_field and not after_separate:
+                field_instr += instrText.text or ""
+                continue
+
+            txt = _runs_text(child)
+            if not txt:
+                continue
+
+            if in_field and after_separate:
+                field_display_parts.append(txt)
+            else:
+                parts.append(html_entities(txt))
+
+    if in_field:
+        flush_field()
+
+    return "".join(parts).strip()
+
+
+# =========================
+# Extract all lines
+# =========================
+
+def extract_all_lines_as_html(doc_obj) -> List[str]:
+    """
+    Estrae righe da paragrafi e tabelle mantenendo l’ordine.
+    Ogni riga è HTML-safe e preserva i link <a>.
+    """
+    lines: List[str] = []
+
+    def add_line(t: str):
+        t = (t or "").strip()
+        if t:
+            lines.append(t)
+
+    for block in iter_block_items(doc_obj):
+        if isinstance(block, Paragraph):
+            add_line(paragraph_to_html(block))
+
+        elif isinstance(block, Table):
+            for row in block.rows:
+                for cell in row.cells:
+                    for sub in iter_block_items(cell):
+                        if isinstance(sub, Paragraph):
+                            add_line(paragraph_to_html(sub))
+                        elif isinstance(sub, Table):
+                            for r2 in sub.rows:
+                                for c2 in r2.cells:
+                                    for sub2 in iter_block_items(c2):
+                                        if isinstance(sub2, Paragraph):
+                                            add_line(paragraph_to_html(sub2))
+
+    return lines
+
+
+# =========================
+# Parsing input DOCX
+# =========================
+
+def parse_input_docx(path: Path) -> Dict[str, Any]:
+    src = Document(str(path))
+    lines = extract_all_lines_as_html(src)
+
+    meta: Dict[str, str] = {k: "" for k in OUTPUT_META_LABELS}
+    h1 = ""
+    testo_lines: List[str] = []
+
+    in_testo = False
+    testo_re = re.compile(
+        r"^({})\s*:\s*$".format("|".join(TESTO_KEYS)), re.I
+    )
+
+    for line in lines:
+        if testo_re.match(line):
+            in_testo = True
+            continue
+
+        if not in_testo:
+            m = re.match(r"^([^:]{1,80})\s*:\s*(.*)$", line)
+            if m:
+                k = _normalize_key(m.group(1))
+                v = m.group(2).strip()
+                if k in INPUT_KEY_MAP:
+                    out_k = INPUT_KEY_MAP[k]
+                    if out_k == "H1":
+                        h1 = v
+                    elif out_k in meta:
+                        meta[out_k] = v
+            continue
+
+        testo_lines.append(line)
+
+    if not testo_lines:
+        testo_lines = [
+            l for l in lines
+            if not re.match(r"^([^:]{1,80})\s*:", l)
+        ]
+
+    if not h1:
+        h1 = meta.get("Title") or (testo_lines[0] if testo_lines else "Untitled")
+
+    return {
+        "meta": meta,
+        "h1": h1.strip(),
+        "intro_paras": testo_lines,
+        "sections": [],
+    }
+
+
+# =========================
+# HTML blocks
+# =========================
+
+def build_html_rows(parsed: Dict[str, Any]) -> List[Tuple[str, str]]:
+    rows: List[Tuple[str, str]] = []
+
+    rows.append(
+        ("H1", f"<h1>{html_entities(parsed['h1'])}</h1>")
+    )
+
+    intro_html = "\n\n".join(
+        f'<p class="h-text-size-14 h-font-primary">{p}</p>'
+        for p in parsed.get("intro_paras", [])
+    )
+
+    rows.append(("Intro", intro_html))
+    return rows
+
+
+# =========================
+# Output DOCX
+# =========================
+
+def write_output_docx(parsed: Dict[str, Any], output_path: Path):
+    doc = Document()
+    meta = parsed["meta"]
+
+    # Titolo DOCX — NO html_entities
+    title = meta.get("Title") or parsed["h1"] or "Untitled"
+
+    p = doc.add_paragraph()
+    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    r = p.add_run(title)
+    r.bold = True
+    r.font.size = Pt(20)
+
+    doc.add_paragraph("")
+
+    table = doc.add_table(rows=len(OUTPUT_META_LABELS), cols=2)
+    table.style = "Table Grid"
+
+    for i, key in enumerate(OUTPUT_META_LABELS):
+        shade_cell(table.cell(i, 0), "000000")
+        set_cell_text(
+            table.cell(i, 0),
+            key,
+            bold=True,
+            color=RGBColor(255, 255, 255)
+        )
+        set_cell_text(
+            table.cell(i, 1),
+            meta.get(key, "")
+        )  # NO html_entities per meta
+
+    doc.add_paragraph("")
+    doc.add_paragraph("")
+
+    for block, html_block in build_html_rows(parsed):
+        doc.add_paragraph(block)
+        doc.add_paragraph(html_block)
+
+    doc.save(str(output_path))
+
+
+# =========================
+# Runner helpers
+# =========================
+
+def convert_one(input_docx: Path, output_docx: Path):
+    parsed = parse_input_docx(input_docx)
+    write_output_docx(parsed, output_docx)
+
+
+def convert_uploaded_file(uploaded_file) -> Path:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmpdir = Path(tmpdir)
+
+        input_path = tmpdir / uploaded_file.name
+        output_path = tmpdir / f"output_{uploaded_file.name}"
+
+        input_path.write_bytes(uploaded_file.read())
+        convert_one(input_path, output_path)
+
+        final = Path(tempfile.gettempdir()) / output_path.name
+        final.write_bytes(output_path.read_bytes())
+        return final
