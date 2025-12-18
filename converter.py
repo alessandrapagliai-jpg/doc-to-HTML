@@ -331,36 +331,61 @@ def build_structure_of_content(html_rows):
 
 def write_output_docx(parsed: Dict[str, Any], output_path: Path):
     doc = Document()
-    meta = parsed["meta"]
 
-    title = meta.get("Title") or parsed["h1"] or "Untitled"
+    meta = parsed.get("meta", {})
+
+    # =========================
+    # Titolo top DOCX (RAW)
+    # =========================
+    title = (meta.get("Title") or "").strip() or (parsed.get("h1") or "").strip() or "Untitled"
 
     p = doc.add_paragraph()
     p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    r = p.add_run(title)
-    r.bold = True
-    r.font.size = Pt(20)
+    run = p.add_run(title)
+    run.bold = True
+    run.font.size = Pt(20)
 
     doc.add_paragraph("")
+    doc.add_paragraph("")
 
+    # =========================
+    # Tabella metadati
+    # =========================
     table = doc.add_table(rows=len(OUTPUT_META_LABELS), cols=2)
     table.style = "Table Grid"
 
     for i, key in enumerate(OUTPUT_META_LABELS):
-        shade_cell(table.cell(i, 0), "000000")
+        left = table.cell(i, 0)
+        right = table.cell(i, 1)
+
+        shade_cell(left, "000000")
         set_cell_text(
-            table.cell(i, 0),
+            left,
             key,
             bold=True,
-            color=RGBColor(255, 255, 255)
+            color=RGBColor(255, 255, 255),
+            size_pt=10
         )
-        set_cell_text(table.cell(i, 1), meta.get(key, ""))
+
+        # META = RAW (NO html_entities)
+        set_cell_text(
+            right,
+            (meta.get(key, "") or ""),
+            bold=False,
+            size_pt=10
+        )
 
     doc.add_paragraph("")
     doc.add_paragraph("")
 
+    # =========================
+    # Structure of content
+    # =========================
     p = doc.add_paragraph("Structure of content:")
-    p.runs[0].bold = True
+    if p.runs:
+        p.runs[0].bold = True
+    else:
+        p.add_run("Structure of content:").bold = True
 
     html_rows = build_html_rows(parsed)
     for line in build_structure_of_content(html_rows):
@@ -369,20 +394,48 @@ def write_output_docx(parsed: Dict[str, Any], output_path: Path):
     doc.add_paragraph("")
     doc.add_paragraph("")
 
+    # =========================
+    # Tabella Block | HTML Output
+    # =========================
     t2 = doc.add_table(rows=1, cols=2)
     t2.style = "Table Grid"
-    shade_cell(t2.cell(0, 0), "D9D9D9")
-    shade_cell(t2.cell(0, 1), "D9D9D9")
-    set_cell_text(t2.cell(0, 0), "Block", bold=True)
-    set_cell_text(t2.cell(0, 1), "⭐ HTML Output ⭐", bold=True)
 
-    for block, html_ in html_rows:
-        row = t2.add_row().cells
-        row[0].text = block
-        row[1].text = html_
+    hdr0 = t2.cell(0, 0)
+    hdr1 = t2.cell(0, 1)
 
+    shade_cell(hdr0, "D9D9D9")
+    shade_cell(hdr1, "D9D9D9")
+
+    set_cell_text(hdr0, "Block", bold=True, size_pt=10)
+    set_cell_text(hdr1, "⭐ HTML Output ⭐", bold=True, size_pt=10)
+
+    # =========================
+    # RIGHE CON PARAGRAFI VERI
+    # =========================
+    for block, html_block in html_rows:
+        row_cells = t2.add_row().cells
+
+        # Colonna Block
+        row_cells[0].text = block
+        for r in row_cells[0].paragraphs[0].runs:
+            r.font.size = Pt(10)
+
+        # Colonna HTML Output — QUI IL FIX
+        cell = row_cells[1]
+        cell.text = ""  # rimuove il paragrafo automatico
+
+        # ogni \n\n = nuovo paragrafo Word
+        chunks = [c for c in html_block.split("\n\n") if c.strip()]
+
+        for chunk in chunks:
+            p = cell.add_paragraph(chunk)
+            for r in p.runs:
+                r.font.size = Pt(10)
+
+    # =========================
+    # Save
+    # =========================
     doc.save(str(output_path))
-
 
 # =========================
 # Streamlit helper
@@ -399,3 +452,4 @@ def convert_uploaded_file(uploaded_file) -> Path:
         final = Path(tempfile.gettempdir()) / out.name
         final.write_bytes(out.read_bytes())
         return final
+
