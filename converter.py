@@ -51,9 +51,14 @@ def html_entities(s: str) -> str:
 
     def stash_anchor(m):
         anchors.append(m.group(0))
-        return f"__ANCHOR_{len(anchors)-1}__"
+        return f"__ANCHOR_{len(anchors) - 1}__"
 
-    s = re.sub(r"<a\s+href=\"[^\"]+\">.*?</a>", stash_anchor, s, flags=re.I | re.S)
+    s = re.sub(
+        r'<a\s+href="[^"]+">.*?</a>',
+        stash_anchor,
+        s,
+        flags=re.I | re.S,
+    )
 
     s = html.escape(s, quote=False)
 
@@ -100,6 +105,7 @@ def shade_cell(cell, fill_hex: str):
     shd.set(qn("w:fill"), fill_hex)
     tc_pr.append(shd)
 
+
 def set_cell_text(cell, text: str, bold=False, color=None, size_pt=10):
     cell.text = ""
     p = cell.paragraphs[0]
@@ -129,6 +135,7 @@ def iter_block_items(parent) -> Iterable[Union[Paragraph, Table]]:
 # =========================
 # Hyperlink-aware paragraph
 # =========================
+
 def _iter_text_runs(node) -> str:
     parts = []
 
@@ -144,7 +151,10 @@ def _iter_text_runs(node) -> str:
         text = "".join(texts)
 
         rpr = r.find(".//w:rPr", namespaces=r.nsmap)
-        is_bold = rpr is not None and rpr.find(".//w:b", namespaces=r.nsmap) is not None
+        is_bold = (
+            rpr is not None
+            and rpr.find(".//w:b", namespaces=r.nsmap) is not None
+        )
 
         if is_bold:
             parts.append(f"<strong>{text}</strong>")
@@ -152,8 +162,6 @@ def _iter_text_runs(node) -> str:
             parts.append(text)
 
     return "".join(parts)
-
-
 
 
 # =========================
@@ -193,7 +201,9 @@ def parse_input_docx(path: Path) -> Dict[str, Any]:
     h1 = ""
 
     in_testo = False
-    testo_re = re.compile(r"^({})\s*:\s*$".format("|".join(TESTO_KEYS)), re.I)
+    testo_re = re.compile(
+        r"^({})\s*:\s*$".format("|".join(TESTO_KEYS)), re.I
+    )
 
     for line in lines:
         if testo_re.match(line):
@@ -215,24 +225,27 @@ def parse_input_docx(path: Path) -> Dict[str, Any]:
 
         m = re.match(r"^(.*)\s*\((h2|h3)\)\s*$", line, re.I)
         if m:
-            body.append({
-                "block": "✏️ S3",
-                "html": f"<h2><strong>{html_entities(m.group(1))}</strong></h2>"
-            })
+            body.append(
+                {
+                    "block": "✏️ S3",
+                    "html": f"<h2><strong>{html_entities(m.group(1))}</strong></h2>",
+                }
+            )
         else:
-            body.append({
-                "block": "Intro" if not body else "✏️ S3",
-                "html": f'<p class="h-text-size-14 h-font-primary">{html_entities(line)}</p>'
-            })
+            body.append(
+                {
+                    "block": "Intro" if not body else "✏️ S3",
+                    "html": (
+                        f'<p class="h-text-size-14 h-font-primary">'
+                        f"{html_entities(line)}</p>"
+                    ),
+                }
+            )
 
     if not h1:
         h1 = meta.get("Title") or "Untitled"
 
-    return {
-        "meta": meta,
-        "h1": h1,
-        "body": body
-    }
+    return {"meta": meta, "h1": h1, "body": body}
 
 
 # =========================
@@ -241,7 +254,11 @@ def parse_input_docx(path: Path) -> Dict[str, Any]:
 
 def build_structure(body: List[Dict[str, str]]) -> List[str]:
     s = ["H1", "Intro"]
-    s3 = sum(1 for b in body if b["block"] == "✏️ S3" and b["html"].startswith("<h2"))
+    s3 = sum(
+        1
+        for b in body
+        if b["block"] == "✏️ S3" and b["html"].startswith("<h2")
+    )
     s.extend(["✏️ S3"] * s3)
     return s
 
@@ -268,7 +285,12 @@ def write_output_docx(parsed: Dict[str, Any], out: Path):
 
     for i, k in enumerate(OUTPUT_META_LABELS):
         shade_cell(table.cell(i, 0), "000000")
-        set_cell_text(table.cell(i, 0), k, bold=True, color=RGBColor(255, 255, 255))
+        set_cell_text(
+            table.cell(i, 0),
+            k,
+            bold=True,
+            color=RGBColor(255, 255, 255),
+        )
         set_cell_text(table.cell(i, 1), meta.get(k, ""))
 
     doc.add_paragraph("")
@@ -310,4 +332,3 @@ def convert_uploaded_file(uploaded_file):
         final = Path(tempfile.gettempdir()) / out.name
         final.write_bytes(out.read_bytes())
         return final
-
