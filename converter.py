@@ -47,18 +47,13 @@ def html_entities(s: str) -> str:
     if not s:
         return ""
 
-    tokens = []
+    anchors = []
 
-    def stash(m):
-        tokens.append(m.group(0))
-        return f"__TOKEN_{len(tokens)-1}__"
+    def stash_anchor(m):
+        anchors.append(m.group(0))
+        return f"__ANCHOR_{len(anchors)-1}__"
 
-    s = re.sub(
-        r'(<a\s+href="[^"]+">.*?</a>|</?strong>|</?em>)',
-        stash,
-        s,
-        flags=re.I | re.S
-    )
+    s = re.sub(r"<a\s+href=\"[^\"]+\">.*?</a>", stash_anchor, s, flags=re.I | re.S)
 
     s = html.escape(s, quote=False)
 
@@ -87,8 +82,8 @@ def html_entities(s: str) -> str:
     for k, v in replacements.items():
         s = s.replace(k, v)
 
-    for i, t in enumerate(tokens):
-        s = s.replace(f"__TOKEN_{i}__", t)
+    for i, a in enumerate(anchors):
+        s = s.replace(f"__ANCHOR_{i}__", a)
 
     return s
 
@@ -132,41 +127,15 @@ def iter_block_items(parent) -> Iterable[Union[Paragraph, Table]]:
 
 
 # =========================
-# Hyperlink + bold + italic
+# Hyperlink-aware paragraph
 # =========================
 
 def _iter_text_runs(node) -> str:
-    parts = []
-
-    if node.tag.endswith("}r"):
-        runs = [node]
-        ns = node.nsmap
-    else:
-        runs = node.findall(".//w:r", namespaces=node.nsmap)
-        ns = node.nsmap
-
-    for r in runs:
-        texts = [t.text for t in r.findall(".//w:t", namespaces=ns) if t.text]
-        if not texts:
-            continue
-
-        text = "".join(texts)
-
-        rpr = r.find(".//w:rPr", namespaces=ns)
-        is_bold = rpr is not None and rpr.find(".//w:b", namespaces=ns) is not None
-        is_italic = rpr is not None and rpr.find(".//w:i", namespaces=ns) is not None
-
-        if is_bold and is_italic:
-            parts.append(f"<strong><em>{text}</em></strong>")
-        elif is_bold:
-            parts.append(f"<strong>{text}</strong>")
-        elif is_italic:
-            parts.append(f"<em>{text}</em>")
-        else:
-            parts.append(text)
-
-    return "".join(parts)
-
+    texts = []
+    for t in node.findall(".//w:t", namespaces=node.nsmap):
+        if t.text:
+            texts.append(t.text)
+    return "".join(texts)
 
 def paragraph_to_text_with_links(paragraph: Paragraph) -> str:
     out = []
@@ -175,16 +144,20 @@ def paragraph_to_text_with_links(paragraph: Paragraph) -> str:
     for child in paragraph._p.iterchildren():
         tag = child.tag
 
+        # hyperlink
         if tag.endswith("}hyperlink"):
             r_id = child.get(qn("r:id"))
             text = _iter_text_runs(child)
+
             if r_id and r_id in part.rels and text.strip():
                 href = part.rels[r_id].target_ref
                 out.append(f'<a href="{href}">{text}</a>')
 
+        # run normale (NON dentro hyperlink)
         elif tag.endswith("}r"):
             if child.getparent() is not paragraph._p:
                 continue
+
             text = _iter_text_runs(child)
             if text.strip():
                 out.append(text)
@@ -264,7 +237,11 @@ def parse_input_docx(path: Path) -> Dict[str, Any]:
     if not h1:
         h1 = meta.get("Title") or "Untitled"
 
-    return {"meta": meta, "h1": h1, "body": body}
+    return {
+        "meta": meta,
+        "h1": h1,
+        "body": body
+    }
 
 
 # =========================
