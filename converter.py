@@ -137,12 +137,7 @@ def _iter_text_runs(node) -> str:
             texts.append(t.text)
     return "".join(texts)
 
-
-# =========================
-# NEW: preserve bold from DOCX
-# =========================
-
-def paragraph_to_html_preserve_bold(paragraph: Paragraph) -> str:
+def paragraph_to_text_with_links(paragraph: Paragraph) -> str:
     out = []
     part = paragraph.part
 
@@ -152,40 +147,20 @@ def paragraph_to_html_preserve_bold(paragraph: Paragraph) -> str:
         # hyperlink
         if tag.endswith("}hyperlink"):
             r_id = child.get(qn("r:id"))
-            inner = []
-
-            for r in child.findall(".//w:r", namespaces=child.nsmap):
-                text = _iter_text_runs(r)
-                if not text.strip():
-                    continue
-
-                rpr = r.find("./w:rPr", namespaces=r.nsmap)
-                is_bold = (
-                    rpr is not None and
-                    (rpr.find("./w:b", namespaces=r.nsmap) is not None or
-                     rpr.find("./w:bCs", namespaces=r.nsmap) is not None)
-                )
-
-                inner.append(f"<strong>{text}</strong>" if is_bold else text)
-
-            if r_id and r_id in part.rels and inner:
-                href = part.rels[r_id].target_ref
-                out.append(f'<a href="{href}">{"".join(inner)}</a>')
-
-        # run normale
-        elif tag.endswith("}r"):
             text = _iter_text_runs(child)
-            if not text.strip():
+
+            if r_id and r_id in part.rels and text.strip():
+                href = part.rels[r_id].target_ref
+                out.append(f'<a href="{href}">{text}</a>')
+
+        # run normale (NON dentro hyperlink)
+        elif tag.endswith("}r"):
+            if child.getparent() is not paragraph._p:
                 continue
 
-            rpr = child.find("./w:rPr", namespaces=child.nsmap)
-            is_bold = (
-                rpr is not None and
-                (rpr.find("./w:b", namespaces=child.nsmap) is not None or
-                 rpr.find("./w:bCs", namespaces=child.nsmap) is not None)
-            )
-
-            out.append(f"<strong>{text}</strong>" if is_bold else text)
+            text = _iter_text_runs(child)
+            if text.strip():
+                out.append(text)
 
     return "".join(out).strip()
 
@@ -199,7 +174,7 @@ def extract_lines_raw(doc: Document) -> List[str]:
 
     for block in iter_block_items(doc):
         if isinstance(block, Paragraph):
-            t = paragraph_to_html_preserve_bold(block)
+            t = paragraph_to_text_with_links(block)
             if t:
                 lines.append(t)
 
@@ -207,7 +182,7 @@ def extract_lines_raw(doc: Document) -> List[str]:
             for row in block.rows:
                 for cell in row.cells:
                     for p in cell.paragraphs:
-                        t = paragraph_to_html_preserve_bold(p)
+                        t = paragraph_to_text_with_links(p)
                         if t:
                             lines.append(t)
 
