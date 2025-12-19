@@ -136,6 +136,32 @@ def _iter_text_runs(node) -> str:
         if t.text:
             texts.append(t.text)
     return "".join(texts)
+def run_to_html(run_elm) -> str:
+    """
+    Converte un singolo <w:r> in HTML,
+    preservando il grassetto come <strong>.
+    """
+    texts = []
+    is_bold = False
+
+    # verifica grassetto
+    rpr = run_elm.find(".//w:rPr", namespaces=run_elm.nsmap)
+    if rpr is not None and rpr.find(".//w:b", namespaces=run_elm.nsmap) is not None:
+        is_bold = True
+
+    # testo del run
+    for t in run_elm.findall(".//w:t", namespaces=run_elm.nsmap):
+        if t.text:
+            texts.append(t.text)
+
+    text = "".join(texts)
+    if not text.strip():
+        return ""
+
+    if is_bold:
+        return f"<strong>{text}</strong>"
+
+    return text
 
 def paragraph_to_text_with_links(paragraph: Paragraph) -> str:
     out = []
@@ -319,3 +345,4 @@ def convert_uploaded_file(uploaded_file):
         final = Path(tempfile.gettempdir()) / out.name
         final.write_bytes(out.read_bytes())
         return final
+
