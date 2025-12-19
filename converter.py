@@ -154,8 +154,9 @@ def paragraph_to_text_with_links(paragraph: Paragraph) -> str:
                 out.append(text)
 
         elif tag.endswith("}r"):
-            out.append(_iter_text_runs(child))
-
+            text = _iter_text_runs(child)
+            if text.strip():
+                out.append(text)
     return "".join(out).strip()
 
 
@@ -313,3 +314,4 @@ def convert_uploaded_file(uploaded_file):
         final = Path(tempfile.gettempdir()) / out.name
         final.write_bytes(out.read_bytes())
         return final
+
