@@ -135,33 +135,75 @@ def iter_block_items(parent) -> Iterable[Union[Paragraph, Table]]:
 # =========================
 # Hyperlink-aware paragraph
 # =========================
+# =========================
+# Hyperlink-aware paragraph
+# =========================
 
 def _iter_text_runs(node) -> str:
     parts = []
 
-    for r in node.findall(".//w:r", namespaces=node.nsmap):
-        texts = []
-        for t in r.findall(".//w:t", namespaces=node.nsmap):
-            if t.text:
-                texts.append(t.text)
+    # Se node è già un run, lo processiamo direttamente
+    if node.tag.endswith("}r"):
+        runs = [node]
+        ns = node.nsmap
+    else:
+        runs = node.findall(".//w:r", namespaces=node.nsmap)
+        ns = node.nsmap
+
+    for r in runs:
+        texts = [
+            t.text
+            for t in r.findall(".//w:t", namespaces=ns)
+            if t.text
+        ]
 
         if not texts:
             continue
 
         text = "".join(texts)
 
-        rpr = r.find(".//w:rPr", namespaces=r.nsmap)
-        is_bold = (
-            rpr is not None
-            and rpr.find(".//w:b", namespaces=r.nsmap) is not None
-        )
+        rpr = r.find(".//w:rPr", namespaces=ns)
+        is_bold = rpr is not None and rpr.find(".//w:b", namespaces=ns) is not None
+        is_italic = rpr is not None and rpr.find(".//w:i", namespaces=ns) is not None
 
-        if is_bold:
+        if is_bold and is_italic:
+            parts.append(f"<strong><em>{text}</em></strong>")
+        elif is_bold:
             parts.append(f"<strong>{text}</strong>")
+        elif is_italic:
+            parts.append(f"<em>{text}</em>")
         else:
             parts.append(text)
 
     return "".join(parts)
+
+
+def paragraph_to_text_with_links(paragraph: Paragraph) -> str:
+    out = []
+    part = paragraph.part
+
+    for child in paragraph._p.iterchildren():
+        tag = child.tag
+
+        # hyperlink
+        if tag.endswith("}hyperlink"):
+            r_id = child.get(qn("r:id"))
+            text = _iter_text_runs(child)
+
+            if r_id and r_id in part.rels and text.strip():
+                href = part.rels[r_id].target_ref
+                out.append(f'<a href="{href}">{text}</a>')
+
+        # run normale (solo se figlio diretto del paragrafo)
+        elif tag.endswith("}r"):
+            if child.getparent() is not paragraph._p:
+                continue
+
+            text = _iter_text_runs(child)
+            if text.strip():
+                out.append(text)
+
+    return "".join(out).strip()
 
 
 # =========================
@@ -186,6 +228,7 @@ def extract_lines_raw(doc: Document) -> List[str]:
                             lines.append(t)
 
     return lines
+
 
 
 # =========================
@@ -332,3 +375,4 @@ def convert_uploaded_file(uploaded_file):
         final = Path(tempfile.gettempdir()) / out.name
         final.write_bytes(out.read_bytes())
         return final
+
