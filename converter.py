@@ -2,7 +2,7 @@ import re
 import html
 import tempfile
 from pathlib import Path
-from typing import List, Dict, Any, Iterable, Union, Optional
+from typing import List, Dict, Any, Iterable, Union
 
 from docx import Document
 from docx.text.paragraph import Paragraph
@@ -40,13 +40,15 @@ TESTO_KEYS = {"testo", "content", "article", "body", "testo articolo"}
 
 
 # =========================
-# HTML ENTITIES (SOLO OUTPUT)
+# HTML entities (SOLO OUTPUT)
 # =========================
 
 def html_entities(s: str) -> str:
     if not s:
         return ""
+
     s = html.escape(s, quote=False)
+
     replacements = {
         "’": "&rsquo;",
         "‘": "&lsquo;",
@@ -67,16 +69,16 @@ def html_entities(s: str) -> str:
         "Ì": "&Igrave;",
         "Ò": "&Ograve;",
         "Ù": "&Ugrave;",
-        "ô": "&ocirc;",
-        "Ô": "&Ocirc;",
     }
+
     for k, v in replacements.items():
         s = s.replace(k, v)
+
     return s
 
 
 # =========================
-# DOCX HELPERS
+# DOCX helpers
 # =========================
 
 def shade_cell(cell, fill_hex: str):
@@ -98,7 +100,7 @@ def set_cell_text(cell, text: str, bold=False, color=None, size_pt=10):
 
 
 # =========================
-# ITERAZIONE DOCX
+# Iterazione DOCX
 # =========================
 
 def iter_block_items(parent) -> Iterable[Union[Paragraph, Table]]:
@@ -112,8 +114,13 @@ def iter_block_items(parent) -> Iterable[Union[Paragraph, Table]]:
         elif isinstance(child, CT_Tbl):
             yield Table(child, parent)
 
+
+# =========================
+# Estrazione RAW
+# =========================
+
 def extract_lines_raw(doc: Document) -> List[str]:
-    lines: List[str] = []
+    lines = []
 
     for block in iter_block_items(doc):
         if isinstance(block, Paragraph):
@@ -133,39 +140,19 @@ def extract_lines_raw(doc: Document) -> List[str]:
 
 
 # =========================
-# PARSING INPUT
+# Parsing input DOCX
 # =========================
-
-Heading = Dict[str, Any]
-# heading item structure:
-# {
-#   "level": 2 or 3,
-#   "block": "S2" or "✏️ S3",
-#   "tag": "h2" or "h3",
-#   "title": "<h2>..</h2>" (html),
-#   "paras": ["<p>..</p>", ...]
-# }
 
 def parse_input_docx(path: Path) -> Dict[str, Any]:
     doc = Document(str(path))
     lines = extract_lines_raw(doc)
 
     meta = {k: "" for k in OUTPUT_META_LABELS}
+    body: List[Dict[str, str]] = []
     h1 = ""
 
     in_testo = False
     testo_re = re.compile(r"^({})\s*:\s*$".format("|".join(TESTO_KEYS)), re.I)
-
-    intro: List[str] = []
-    headings: List[Heading] = []
-
-    current: Optional[Heading] = None
-
-    def flush_current():
-        nonlocal current
-        if current is not None:
-            headings.append(current)
-            current = None
 
     for line in lines:
         if testo_re.match(line):
@@ -185,37 +172,18 @@ def parse_input_docx(path: Path) -> Dict[str, Any]:
                         meta[out] = val
             continue
 
-        # BODY: heading?
+        # BODY
         m = re.match(r"^(.*)\s*\((h2|h3)\)\s*$", line, re.I)
         if m:
-            # nuovo heading => chiudi il precedente
-            flush_current()
-
-            level = 2 if m.group(2).lower() == "h2" else 3
-            tag = "h2" if level == 2 else "h3"
-            block = "S2" if level == 2 else "✏️ S3"
-
-            title_txt = html_entities(m.group(1).strip())
-            title_html = f"<{tag}>{title_txt}</{tag}>"
-
-            current = {
-                "level": level,
-                "block": block,
-                "tag": tag,
-                "title": title_html,
-                "paras": []
-            }
-            continue
-
-        # paragraph
-        p_html = f'<p class="h-text-size-14 h-font-primary">{html_entities(line)}</p>'
-
-        if current is None:
-            intro.append(p_html)
+            body.append({
+                "block": "✏️ S3",
+                "html": f"<h2><strong>{html_entities(m.group(1))}</strong></h2>"
+            })
         else:
-            current["paras"].append(p_html)
-
-    flush_current()
+            body.append({
+                "block": "Intro" if not body else "✏️ S3",
+                "html": f'<p class="h-text-size-14 h-font-primary">{html_entities(line)}</p>'
+            })
 
     if not h1:
         h1 = meta.get("Title") or "Untitled"
@@ -223,31 +191,30 @@ def parse_input_docx(path: Path) -> Dict[str, Any]:
     return {
         "meta": meta,
         "h1": h1,
-        "intro": intro,
-        "headings": headings,
+        "body": body
     }
 
 
 # =========================
-# STRUCTURE OF CONTENT
+# Structure of content
 # =========================
 
-def build_structure(parsed: Dict[str, Any]) -> List[str]:
+def build_structure(body: List[Dict[str, str]]) -> List[str]:
     s = ["H1", "Intro"]
-    for h in parsed["headings"]:
-        s.append(h["block"])
+    s3 = sum(1 for b in body if b["block"] == "✏️ S3" and b["html"].startswith("<h2"))
+    s.extend(["✏️ S3"] * s3)
     return s
 
 
 # =========================
-# OUTPUT DOCX
+# Output DOCX
 # =========================
 
 def write_output_docx(parsed: Dict[str, Any], out: Path):
     doc = Document()
     meta = parsed["meta"]
 
-    # Titolo grande (RAW)
+    # Titolo
     p = doc.add_paragraph()
     p.alignment = WD_ALIGN_PARAGRAPH.CENTER
     r = p.add_run(meta.get("Title") or parsed["h1"])
@@ -257,12 +224,13 @@ def write_output_docx(parsed: Dict[str, Any], out: Path):
     doc.add_paragraph("")
     doc.add_paragraph("")
 
-    # Tabella metadati
+    # Meta table
     table = doc.add_table(rows=len(OUTPUT_META_LABELS), cols=2)
     table.style = "Table Grid"
+
     for i, k in enumerate(OUTPUT_META_LABELS):
         shade_cell(table.cell(i, 0), "000000")
-        set_cell_text(table.cell(i, 0), k, bold=True, color=RGBColor(255, 255, 255))
+        set_cell_text(table.cell(i, 0), k, bold=True, color=RGBColor(255,255,255))
         set_cell_text(table.cell(i, 1), meta.get(k, ""))
 
     doc.add_paragraph("")
@@ -271,45 +239,28 @@ def write_output_docx(parsed: Dict[str, Any], out: Path):
     # Structure of content
     p = doc.add_paragraph("Structure of content:")
     p.runs[0].bold = True
-    for l in build_structure(parsed):
+    for l in build_structure(parsed["body"]):
         doc.add_paragraph(l)
 
     doc.add_paragraph("")
     doc.add_paragraph("")
 
-    # Tabella Block | HTML Output
+    # HTML Output table
     t2 = doc.add_table(rows=1, cols=2)
     t2.style = "Table Grid"
-    set_cell_text(t2.cell(0, 0), "Block", bold=True)
-    set_cell_text(t2.cell(0, 1), "⭐ HTML Output ⭐", bold=True)
+    set_cell_text(t2.cell(0,0), "Block", bold=True)
+    set_cell_text(t2.cell(0,1), "⭐ HTML Output ⭐", bold=True)
 
-    # H1
-    row = t2.add_row().cells
-    row[0].text = "H1"
-    row[1].add_paragraph(f"<h1>{html_entities(parsed['h1'])}</h1>")
-
-    # Intro (una riga per paragrafo)
-    for p_html in parsed["intro"]:
+    for item in parsed["body"]:
         row = t2.add_row().cells
-        row[0].text = "Intro"
-        row[1].add_paragraph(p_html)
-
-    # Headings: UNA RIGA PER HEADING (S2 o S3) con header + paragrafi dentro la stessa cella
-    for h in parsed["headings"]:
-        row = t2.add_row().cells
-        row[0].text = h["block"]
-
-        cell = row[1]
-        cell.text = ""
-        cell.add_paragraph(h["title"])
-        for p_html in h["paras"]:
-            cell.add_paragraph(p_html)
+        row[0].text = item["block"]
+        row[1].add_paragraph(item["html"])
 
     doc.save(str(out))
 
 
 # =========================
-# STREAMLIT HELPER
+# Streamlit helper
 # =========================
 
 def convert_uploaded_file(uploaded_file):
