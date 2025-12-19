@@ -136,34 +136,13 @@ def _iter_text_runs(node) -> str:
         if t.text:
             texts.append(t.text)
     return "".join(texts)
-def run_to_html(run_elm) -> str:
-    """
-    Converte un singolo <w:r> in HTML,
-    preservando il grassetto come <strong>.
-    """
-    texts = []
-    is_bold = False
 
-    # verifica grassetto
-    rpr = run_elm.find(".//w:rPr", namespaces=run_elm.nsmap)
-    if rpr is not None and rpr.find(".//w:b", namespaces=run_elm.nsmap) is not None:
-        is_bold = True
 
-    # testo del run
-    for t in run_elm.findall(".//w:t", namespaces=run_elm.nsmap):
-        if t.text:
-            texts.append(t.text)
+# =========================
+# NEW: preserve bold from DOCX
+# =========================
 
-    text = "".join(texts)
-    if not text.strip():
-        return ""
-
-    if is_bold:
-        return f"<strong>{text}</strong>"
-
-    return text
-
-def paragraph_to_text_with_links(paragraph: Paragraph) -> str:
+def paragraph_to_html_preserve_bold(paragraph: Paragraph) -> str:
     out = []
     part = paragraph.part
 
@@ -173,20 +152,40 @@ def paragraph_to_text_with_links(paragraph: Paragraph) -> str:
         # hyperlink
         if tag.endswith("}hyperlink"):
             r_id = child.get(qn("r:id"))
-            text = _iter_text_runs(child)
+            inner = []
 
-            if r_id and r_id in part.rels and text.strip():
+            for r in child.findall(".//w:r", namespaces=child.nsmap):
+                text = _iter_text_runs(r)
+                if not text.strip():
+                    continue
+
+                rpr = r.find("./w:rPr", namespaces=r.nsmap)
+                is_bold = (
+                    rpr is not None and
+                    (rpr.find("./w:b", namespaces=r.nsmap) is not None or
+                     rpr.find("./w:bCs", namespaces=r.nsmap) is not None)
+                )
+
+                inner.append(f"<strong>{text}</strong>" if is_bold else text)
+
+            if r_id and r_id in part.rels and inner:
                 href = part.rels[r_id].target_ref
-                out.append(f'<a href="{href}">{text}</a>')
+                out.append(f'<a href="{href}">{"".join(inner)}</a>')
 
-        # run normale (NON dentro hyperlink)
+        # run normale
         elif tag.endswith("}r"):
-            if child.getparent() is not paragraph._p:
+            text = _iter_text_runs(child)
+            if not text.strip():
                 continue
 
-            text = _iter_text_runs(child)
-            if text.strip():
-                out.append(text)
+            rpr = child.find("./w:rPr", namespaces=child.nsmap)
+            is_bold = (
+                rpr is not None and
+                (rpr.find("./w:b", namespaces=child.nsmap) is not None or
+                 rpr.find("./w:bCs", namespaces=child.nsmap) is not None)
+            )
+
+            out.append(f"<strong>{text}</strong>" if is_bold else text)
 
     return "".join(out).strip()
 
@@ -200,7 +199,7 @@ def extract_lines_raw(doc: Document) -> List[str]:
 
     for block in iter_block_items(doc):
         if isinstance(block, Paragraph):
-            t = paragraph_to_text_with_links(block)
+            t = paragraph_to_html_preserve_bold(block)
             if t:
                 lines.append(t)
 
@@ -208,7 +207,7 @@ def extract_lines_raw(doc: Document) -> List[str]:
             for row in block.rows:
                 for cell in row.cells:
                     for p in cell.paragraphs:
-                        t = paragraph_to_text_with_links(p)
+                        t = paragraph_to_html_preserve_bold(p)
                         if t:
                             lines.append(t)
 
@@ -345,4 +344,3 @@ def convert_uploaded_file(uploaded_file):
         final = Path(tempfile.gettempdir()) / out.name
         final.write_bytes(out.read_bytes())
         return final
-
