@@ -47,6 +47,14 @@ def html_entities(s: str) -> str:
     if not s:
         return ""
 
+    anchors = []
+
+    def stash_anchor(m):
+        anchors.append(m.group(0))
+        return f"__ANCHOR_{len(anchors)-1}__"
+
+    s = re.sub(r"<a\s+href=\"[^\"]+\">.*?</a>", stash_anchor, s, flags=re.I | re.S)
+
     s = html.escape(s, quote=False)
 
     replacements = {
@@ -73,6 +81,9 @@ def html_entities(s: str) -> str:
 
     for k, v in replacements.items():
         s = s.replace(k, v)
+
+    for i, a in enumerate(anchors):
+        s = s.replace(f"__ANCHOR_{i}__", a)
 
     return s
 
@@ -116,6 +127,39 @@ def iter_block_items(parent) -> Iterable[Union[Paragraph, Table]]:
 
 
 # =========================
+# Hyperlink-aware paragraph
+# =========================
+
+def _iter_text_runs(node) -> str:
+    texts = []
+    for t in node.findall(".//w:t", namespaces=node.nsmap):
+        if t.text:
+            texts.append(t.text)
+    return "".join(texts)
+
+def paragraph_to_text_with_links(paragraph: Paragraph) -> str:
+    out = []
+    part = paragraph.part
+
+    for child in paragraph._p.iterchildren():
+        tag = child.tag
+
+        if tag.endswith("}hyperlink"):
+            r_id = child.get(qn("r:id"))
+            text = _iter_text_runs(child)
+            if r_id and r_id in part.rels:
+                href = part.rels[r_id].target_ref
+                out.append(f'<a href="{href}">{text}</a>')
+            else:
+                out.append(text)
+
+        elif tag.endswith("}r"):
+            out.append(_iter_text_runs(child))
+
+    return "".join(out).strip()
+
+
+# =========================
 # Estrazione RAW
 # =========================
 
@@ -124,7 +168,7 @@ def extract_lines_raw(doc: Document) -> List[str]:
 
     for block in iter_block_items(doc):
         if isinstance(block, Paragraph):
-            t = (block.text or "").strip()
+            t = paragraph_to_text_with_links(block)
             if t:
                 lines.append(t)
 
@@ -132,7 +176,7 @@ def extract_lines_raw(doc: Document) -> List[str]:
             for row in block.rows:
                 for cell in row.cells:
                     for p in cell.paragraphs:
-                        t = (p.text or "").strip()
+                        t = paragraph_to_text_with_links(p)
                         if t:
                             lines.append(t)
 
@@ -172,7 +216,6 @@ def parse_input_docx(path: Path) -> Dict[str, Any]:
                         meta[out] = val
             continue
 
-        # BODY
         m = re.match(r"^(.*)\s*\((h2|h3)\)\s*$", line, re.I)
         if m:
             body.append({
@@ -214,7 +257,6 @@ def write_output_docx(parsed: Dict[str, Any], out: Path):
     doc = Document()
     meta = parsed["meta"]
 
-    # Titolo
     p = doc.add_paragraph()
     p.alignment = WD_ALIGN_PARAGRAPH.CENTER
     r = p.add_run(meta.get("Title") or parsed["h1"])
@@ -224,19 +266,17 @@ def write_output_docx(parsed: Dict[str, Any], out: Path):
     doc.add_paragraph("")
     doc.add_paragraph("")
 
-    # Meta table
     table = doc.add_table(rows=len(OUTPUT_META_LABELS), cols=2)
     table.style = "Table Grid"
 
     for i, k in enumerate(OUTPUT_META_LABELS):
         shade_cell(table.cell(i, 0), "000000")
-        set_cell_text(table.cell(i, 0), k, bold=True, color=RGBColor(255,255,255))
+        set_cell_text(table.cell(i, 0), k, bold=True, color=RGBColor(255, 255, 255))
         set_cell_text(table.cell(i, 1), meta.get(k, ""))
 
     doc.add_paragraph("")
     doc.add_paragraph("")
 
-    # Structure of content
     p = doc.add_paragraph("Structure of content:")
     p.runs[0].bold = True
     for l in build_structure(parsed["body"]):
@@ -245,11 +285,10 @@ def write_output_docx(parsed: Dict[str, Any], out: Path):
     doc.add_paragraph("")
     doc.add_paragraph("")
 
-    # HTML Output table
     t2 = doc.add_table(rows=1, cols=2)
     t2.style = "Table Grid"
-    set_cell_text(t2.cell(0,0), "Block", bold=True)
-    set_cell_text(t2.cell(0,1), "⭐ HTML Output ⭐", bold=True)
+    set_cell_text(t2.cell(0, 0), "Block", bold=True)
+    set_cell_text(t2.cell(0, 1), "⭐ HTML Output ⭐", bold=True)
 
     for item in parsed["body"]:
         row = t2.add_row().cells
