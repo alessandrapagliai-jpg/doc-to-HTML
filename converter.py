@@ -127,15 +127,38 @@ def iter_block_items(parent) -> Iterable[Union[Paragraph, Table]]:
 
 
 # =========================
-# Hyperlink-aware paragraph
+# Hyperlink-aware + bold/italic
 # =========================
 
 def _iter_text_runs(node) -> str:
-    texts = []
-    for t in node.findall(".//w:t", namespaces=node.nsmap):
-        if t.text:
-            texts.append(t.text)
-    return "".join(texts)
+    parts = []
+
+    for r in node.findall(".//w:r", namespaces=node.nsmap):
+        texts = []
+        for t in r.findall(".//w:t", namespaces=node.nsmap):
+            if t.text:
+                texts.append(t.text)
+
+        if not texts:
+            continue
+
+        text = "".join(texts)
+
+        rpr = r.find(".//w:rPr", namespaces=r.nsmap)
+        is_bold = rpr is not None and rpr.find(".//w:b", namespaces=r.nsmap) is not None
+        is_italic = rpr is not None and rpr.find(".//w:i", namespaces=r.nsmap) is not None
+
+        if is_bold and is_italic:
+            parts.append(f"<strong><em>{text}</em></strong>")
+        elif is_bold:
+            parts.append(f"<strong>{text}</strong>")
+        elif is_italic:
+            parts.append(f"<em>{text}</em>")
+        else:
+            parts.append(text)
+
+    return "".join(parts)
+
 
 def paragraph_to_text_with_links(paragraph: Paragraph) -> str:
     out = []
@@ -144,7 +167,6 @@ def paragraph_to_text_with_links(paragraph: Paragraph) -> str:
     for child in paragraph._p.iterchildren():
         tag = child.tag
 
-        # hyperlink
         if tag.endswith("}hyperlink"):
             r_id = child.get(qn("r:id"))
             text = _iter_text_runs(child)
@@ -153,7 +175,6 @@ def paragraph_to_text_with_links(paragraph: Paragraph) -> str:
                 href = part.rels[r_id].target_ref
                 out.append(f'<a href="{href}">{text}</a>')
 
-        # run normale (NON dentro hyperlink)
         elif tag.endswith("}r"):
             if child.getparent() is not paragraph._p:
                 continue
