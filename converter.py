@@ -129,40 +129,31 @@ def iter_block_items(parent) -> Iterable[Union[Paragraph, Table]]:
 # =========================
 # Hyperlink-aware paragraph
 # =========================
-
 def _iter_text_runs(node) -> str:
-    texts = []
-    for t in node.findall(".//w:t", namespaces=node.nsmap):
-        if t.text:
-            texts.append(t.text)
-    return "".join(texts)
+    parts = []
 
-def paragraph_to_text_with_links(paragraph: Paragraph) -> str:
-    out = []
-    part = paragraph.part
+    for r in node.findall(".//w:r", namespaces=node.nsmap):
+        texts = []
+        for t in r.findall(".//w:t", namespaces=node.nsmap):
+            if t.text:
+                texts.append(t.text)
 
-    for child in paragraph._p.iterchildren():
-        tag = child.tag
+        if not texts:
+            continue
 
-        # hyperlink
-        if tag.endswith("}hyperlink"):
-            r_id = child.get(qn("r:id"))
-            text = _iter_text_runs(child)
+        text = "".join(texts)
 
-            if r_id and r_id in part.rels and text.strip():
-                href = part.rels[r_id].target_ref
-                out.append(f'<a href="{href}">{text}</a>')
+        rpr = r.find(".//w:rPr", namespaces=r.nsmap)
+        is_bold = rpr is not None and rpr.find(".//w:b", namespaces=r.nsmap) is not None
 
-        # run normale (NON dentro hyperlink)
-        elif tag.endswith("}r"):
-            if child.getparent() is not paragraph._p:
-                continue
+        if is_bold:
+            parts.append(f"<strong>{text}</strong>")
+        else:
+            parts.append(text)
 
-            text = _iter_text_runs(child)
-            if text.strip():
-                out.append(text)
+    return "".join(parts)
 
-    return "".join(out).strip()
+
 
 
 # =========================
@@ -319,3 +310,4 @@ def convert_uploaded_file(uploaded_file):
         final = Path(tempfile.gettempdir()) / out.name
         final.write_bytes(out.read_bytes())
         return final
+
