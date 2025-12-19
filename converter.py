@@ -84,8 +84,14 @@ def html_entities(s: str) -> str:
 def convert_links(text: str) -> str:
     """Convert markdown-style links [text](url) to HTML <a> tags"""
     # Pattern per link markdown: [testo](url) con possibili decorazioni tipo {.underline}
-    pattern = r'\[([^\]]+?)(?:\{[^\}]*\})?\]\(([^\)]+)\)'
-    return re.sub(pattern, r'<a href="\2">\1</a>', text)
+    pattern = r'\[\[?([^\]]+?)(?:\{[^\}]*\})?\]?\]\(([^\)]+)\)'
+    text = re.sub(pattern, r'<a href="\2">\1</a>', text)
+    
+    # Gestisci anche formato semplice [text](url)
+    pattern2 = r'\[([^\]]+?)\]\(([^\)]+)\)'
+    text = re.sub(pattern2, r'<a href="\2">\1</a>', text)
+    
+    return text
 
 
 # =========================
@@ -165,13 +171,19 @@ def parse_input_docx(path: Path) -> Dict[str, Any]:
     in_testo = False
     testo_re = re.compile(r"^({})\s*:\s*$".format("|".join(TESTO_KEYS)), re.I)
     
-    intro_paragraphs = []  # Paragrafi dell'intro
-    current_section_lines = []  # Linee della sezione corrente (header + paragrafi)
+    intro_paragraphs = []
+    current_section_lines = []
     found_first_header = False
+
+    # Debug: stampa le linee per capire il formato
+    print("=== DEBUG LINES ===")
+    for i, line in enumerate(lines):
+        print(f"{i}: {repr(line[:100])}")
 
     for line in lines:
         if testo_re.match(line):
             in_testo = True
+            print(f"FOUND TESTO: {line}")
             continue
 
         if not in_testo:
@@ -187,69 +199,80 @@ def parse_input_docx(path: Path) -> Dict[str, Any]:
                         meta[out] = val
             continue
 
-        # BODY - logica corretta
-        # Check se è un header (h2 o h3)
-        m = re.match(r"^(.+?)\s*\((h2|h3)\)\s*$", line, re.I)
+        # BODY - prova regex più flessibili
+        # Prova diverse varianti di pattern
+        patterns = [
+            r'^(.+?)\s*\(\s*(h2|h3)\s*\)\s*$',  # Con spazi
+            r'^(.+?)\s*\((h2|h3)\)\s*$',         # Standard
+            r'^###?\s+\((h2|h3)\)\s+(.+)$',      # Markdown style
+            r'^##?\s+(.+?)\s*\((h2|h3)\)\s*$',   # Markdown con (h2)
+        ]
         
-        if m:
-            # Abbiamo trovato un header
-            
-            # Se ci sono paragrafi intro, salvali
+        is_header = False
+        header_text = None
+        header_level = None
+        
+        for pattern in patterns:
+            m = re.match(pattern, line, re.I)
+            if m:
+                print(f"MATCHED HEADER: {line} with pattern {pattern}")
+                groups = m.groups()
+                if len(groups) == 2:
+                    if groups[1].lower() in ['h2', 'h3']:
+                        header_text = groups[0].strip()
+                        header_level = groups[1].lower()
+                    else:
+                        header_text = groups[1].strip()
+                        header_level = groups[0].lower()
+                    is_header = True
+                    break
+        
+        if is_header:
+            # Salva intro se presente
             if not found_first_header and intro_paragraphs:
                 for para in intro_paragraphs:
-                    body.append({
-                        "block": "Intro",
-                        "html": para
-                    })
+                    body.append({"block": "Intro", "html": para})
                 intro_paragraphs = []
             
-            # Se c'è una sezione precedente, salvala
+            # Salva sezione precedente
             if current_section_lines:
                 for html_line in current_section_lines:
-                    body.append({
-                        "block": "✏️ S3",
-                        "html": html_line
-                    })
+                    body.append({"block": "✏️ S3", "html": html_line})
                 current_section_lines = []
             
             found_first_header = True
             
-            # Crea l'header per la nuova sezione
-            header_text = m.group(1).strip()
-            header_level = m.group(2).lower()
+            # Crea header
             header_html = f"<{header_level}><strong>{html_entities(header_text)}</strong></{header_level}>"
             current_section_lines.append(header_html)
+            print(f"CREATED HEADER: {header_html}")
             
         else:
-            # È un paragrafo normale
+            # Paragrafo normale
             line_with_links = convert_links(line)
             para_html = f'<p class="h-text-size-14 h-font-primary">{html_entities(line_with_links)}</p>'
             
             if not found_first_header:
-                # Siamo ancora nell'intro
                 intro_paragraphs.append(para_html)
             else:
-                # Siamo dentro una sezione S3
                 current_section_lines.append(para_html)
     
-    # Salva intro se non abbiamo mai trovato header
+    # Salva intro finale
     if not found_first_header and intro_paragraphs:
         for para in intro_paragraphs:
-            body.append({
-                "block": "Intro",
-                "html": para
-            })
+            body.append({"block": "Intro", "html": para})
     
-    # Salva l'ultima sezione S3 se presente
+    # Salva ultima sezione
     if current_section_lines:
         for html_line in current_section_lines:
-            body.append({
-                "block": "✏️ S3",
-                "html": html_line
-            })
+            body.append({"block": "✏️ S3", "html": html_line})
 
     if not h1:
         h1 = meta.get("Title") or "Untitled"
+
+    print(f"\n=== FINAL BODY COUNT: {len(body)} ===")
+    for item in body[:5]:
+        print(f"{item['block']}: {item['html'][:80]}")
 
     return {
         "meta": meta,
@@ -265,15 +288,17 @@ def parse_input_docx(path: Path) -> Dict[str, Any]:
 def build_structure(body: List[Dict[str, str]]) -> List[str]:
     s = ["H1"]
     
-    # Aggiungi Intro se presente
     has_intro = any(b["block"] == "Intro" for b in body)
     if has_intro:
         s.append("Intro")
     
-    # Conta quanti header h2/h3 ci sono
     header_count = sum(1 for b in body if b["block"] == "✏️ S3" and 
                       (b["html"].startswith("<h2") or b["html"].startswith("<h3")))
     s.extend(["✏️ S3"] * header_count)
+    
+    print(f"\n=== STRUCTURE: {s} ===")
+    print(f"Header count: {header_count}")
+    
     return s
 
 
