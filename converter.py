@@ -12,6 +12,7 @@ from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Pt, RGBColor
 
+
 # =========================
 # CONFIG
 # =========================
@@ -26,139 +27,250 @@ INPUT_KEY_MAP = {
     "meta description": "Description",
     "url": "URL",
     "territories": "Territories",
+    "territory": "Territories",
     "target keyword": "Target Keyword",
+    "target keywords": "Target Keyword",
     "kw": "Target Keyword",
     "keyword": "Target Keyword",
+    "primary keyword": "Target Keyword",
     "h1": "H1",
 }
 
+TESTO_KEYS = {"testo", "content", "article", "body", "testo articolo"}
+
+
 # =========================
-# HELPERS FORMALIZZAZIONE HTML
+# HTML entities (SOLO OUTPUT)
 # =========================
 
-def get_html_text(paragraph: Paragraph) -> str:
-    """Estrae il testo da un paragrafo preservando il grassetto (strong)."""
-    full_html = ""
-    for run in paragraph.runs:
-        text = html.escape(run.text)
-        if run.bold:
-            full_html += f"<strong>{text}</strong>"
-        else:
-            full_html += text
-    
-    # Pulizia entità comuni (opzionale se già usato html.escape)
-    replacements = {"’": "&rsquo;", "à": "&agrave;", "è": "&egrave;", "é": "&eacute;", "ì": "&igrave;", "ò": "&ograve;", "ù": "&ugrave;"}
+def html_entities(s: str) -> str:
+    if not s:
+        return ""
+
+    s = html.escape(s, quote=False)
+
+    replacements = {
+        "’": "&rsquo;",
+        "‘": "&lsquo;",
+        "“": "&ldquo;",
+        "”": "&rdquo;",
+        "–": "&ndash;",
+        "—": "&mdash;",
+        "…": "&hellip;",
+        "à": "&agrave;",
+        "è": "&egrave;",
+        "é": "&eacute;",
+        "ì": "&igrave;",
+        "ò": "&ograve;",
+        "ù": "&ugrave;",
+        "À": "&Agrave;",
+        "È": "&Egrave;",
+        "É": "&Eacute;",
+        "Ì": "&Igrave;",
+        "Ò": "&Ograve;",
+        "Ù": "&Ugrave;",
+    }
+
     for k, v in replacements.items():
-        full_html = full_html.replace(k, v)
-    return full_html
+        s = s.replace(k, v)
+
+    return s
+
 
 # =========================
-# PARSING LOGIC
+# DOCX helpers
+# =========================
+
+def shade_cell(cell, fill_hex: str):
+    tc_pr = cell._tc.get_or_add_tcPr()
+    shd = OxmlElement("w:shd")
+    shd.set(qn("w:val"), "clear")
+    shd.set(qn("w:color"), "auto")
+    shd.set(qn("w:fill"), fill_hex)
+    tc_pr.append(shd)
+
+def set_cell_text(cell, text: str, bold=False, color=None, size_pt=10):
+    cell.text = ""
+    p = cell.paragraphs[0]
+    r = p.add_run(text or "")
+    r.bold = bold
+    r.font.size = Pt(size_pt)
+    if color:
+        r.font.color.rgb = color
+
+
+# =========================
+# Iterazione DOCX
+# =========================
+
+def iter_block_items(parent) -> Iterable[Union[Paragraph, Table]]:
+    from docx.oxml.text.paragraph import CT_P
+    from docx.oxml.table import CT_Tbl
+
+    parent_elm = parent.element.body if hasattr(parent, "element") else parent._tc
+    for child in parent_elm.iterchildren():
+        if isinstance(child, CT_P):
+            yield Paragraph(child, parent)
+        elif isinstance(child, CT_Tbl):
+            yield Table(child, parent)
+
+
+# =========================
+# Estrazione RAW
+# =========================
+
+def extract_lines_raw(doc: Document) -> List[str]:
+    lines = []
+
+    for block in iter_block_items(doc):
+        if isinstance(block, Paragraph):
+            t = (block.text or "").strip()
+            if t:
+                lines.append(t)
+
+        elif isinstance(block, Table):
+            for row in block.rows:
+                for cell in row.cells:
+                    for p in cell.paragraphs:
+                        t = (p.text or "").strip()
+                        if t:
+                            lines.append(t)
+
+    return lines
+
+
+# =========================
+# Parsing input DOCX
 # =========================
 
 def parse_input_docx(path: Path) -> Dict[str, Any]:
     doc = Document(str(path))
-    meta = {k: "" for k in OUTPUT_META_LABELS}
-    h1 = ""
-    body_elements = []
-    
-    # 1. Estrazione Metadati dalla Tabella
-    for table in doc.tables:
-        for row in table.rows:
-            if len(row.cells) >= 2:
-                key = row.cells[0].text.strip().lower().replace(":", "")
-                val = row.cells[1].text.strip()
-                if key in INPUT_KEY_MAP:
-                    mapped_key = INPUT_KEY_MAP[key]
-                    if mapped_key == "H1":
-                        h1 = val
-                    else:
-                        meta[mapped_key] = val
+    lines = extract_lines_raw(doc)
 
-    # 2. Estrazione Contenuto (Paragrafi fuori dalle tabelle o dopo la tabella meta)
-    # Saltiamo i paragrafi che sono già stati usati nei metadati se necessario
-    found_testo_start = False
-    
-    for para in doc.paragraphs:
-        text_raw = para.text.strip()
-        if not text_raw: continue
-        
-        # Identifica se è un header (h2) o (h3)
-        header_match = re.search(r"\((h2|h3)\)$", text_raw, re.I)
-        
-        if header_match:
-            tag = header_match.group(1).lower()
-            clean_text = re.sub(r"\s*\(h[23]\)$", "", text_raw, flags=re.I)
-            body_elements.append({
+    meta = {k: "" for k in OUTPUT_META_LABELS}
+    body: List[Dict[str, str]] = []
+    h1 = ""
+
+    in_testo = False
+    testo_re = re.compile(r"^({})\s*:\s*$".format("|".join(TESTO_KEYS)), re.I)
+
+    for line in lines:
+        if testo_re.match(line):
+            in_testo = True
+            continue
+
+        if not in_testo:
+            m = re.match(r"^([^:]{1,80})\s*:\s*(.*)$", line)
+            if m:
+                key = m.group(1).strip().lower()
+                val = m.group(2).strip()
+                if key in INPUT_KEY_MAP:
+                    out = INPUT_KEY_MAP[key]
+                    if out == "H1":
+                        h1 = val
+                    elif out in meta:
+                        meta[out] = val
+            continue
+
+        # BODY
+        m = re.match(r"^(.*)\s*\((h2|h3)\)\s*$", line, re.I)
+        if m:
+            body.append({
                 "block": "✏️ S3",
-                "html": f"<{tag}><strong>{clean_text}</strong></{tag}>"
+                "html": f"<h2><strong>{html_entities(m.group(1))}</strong></h2>"
             })
         else:
-            # È un paragrafo standard
-            # Se il paragrafo contiene solo il nome del tag (es. "Testo:"), lo ignoriamo
-            if text_raw.lower().startswith("testo:"):
-                continue
-                
-            html_content = get_html_text(para)
-            # Determina il nome del blocco
-            block_name = "Intro" if not any(b["block"] == "✏️ S3" for b in body_elements) else "✏️ S3"
-            
-            body_elements.append({
-                "block": block_name,
-                "html": f'<p class="h-text-size-14 h-font-primary">{html_content}</p>'
+            body.append({
+                "block": "Intro" if not body else "✏️ S3",
+                "html": f'<p class="h-text-size-14 h-font-primary">{html_entities(line)}</p>'
             })
 
-    if not h1: h1 = meta.get("Title", "Senza Titolo")
+    if not h1:
+        h1 = meta.get("Title") or "Untitled"
 
-    return {"meta": meta, "h1": h1, "body": body_elements}
+    return {
+        "meta": meta,
+        "h1": h1,
+        "body": body
+    }
+
 
 # =========================
-# OUTPUT GENERATION (Mantenendo la tua struttura)
+# Structure of content
+# =========================
+
+def build_structure(body: List[Dict[str, str]]) -> List[str]:
+    s = ["H1", "Intro"]
+    s3 = sum(1 for b in body if b["block"] == "✏️ S3" and b["html"].startswith("<h2"))
+    s.extend(["✏️ S3"] * s3)
+    return s
+
+
+# =========================
+# Output DOCX
 # =========================
 
 def write_output_docx(parsed: Dict[str, Any], out: Path):
     doc = Document()
-    
-    # Header Titolo
+    meta = parsed["meta"]
+
+    # Titolo
     p = doc.add_paragraph()
     p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    r = p.add_run(parsed["h1"])
+    r = p.add_run(meta.get("Title") or parsed["h1"])
     r.bold = True
-    r.font.size = Pt(18)
+    r.font.size = Pt(20)
 
-    # Tabella Meta
+    doc.add_paragraph("")
+    doc.add_paragraph("")
+
+    # Meta table
     table = doc.add_table(rows=len(OUTPUT_META_LABELS), cols=2)
     table.style = "Table Grid"
+
     for i, k in enumerate(OUTPUT_META_LABELS):
-        # Header cella (Nero)
-        cell_key = table.cell(i, 0)
-        tc_pr = cell_key._tc.get_or_add_tcPr()
-        shd = OxmlElement("w:shd")
-        shd.set(qn("w:val"), "clear")
-        shd.set(qn("w:fill"), "000000")
-        tc_pr.append(shd)
-        
-        rk = cell_key.paragraphs[0].add_run(k)
-        rk.bold = True
-        rk.font.color.rgb = RGBColor(255, 255, 255)
-        
-        table.cell(i, 1).text = parsed["meta"].get(k, "")
+        shade_cell(table.cell(i, 0), "000000")
+        set_cell_text(table.cell(i, 0), k, bold=True, color=RGBColor(255,255,255))
+        set_cell_text(table.cell(i, 1), meta.get(k, ""))
 
-    doc.add_paragraph("\nStructure of content:")
-    for b in ["H1", "Intro"] + [item["block"] for item in parsed["body"] if "h2" in item["html"]]:
-        doc.add_paragraph(b, style='List Bullet')
+    doc.add_paragraph("")
+    doc.add_paragraph("")
 
-    doc.add_paragraph("\n")
-    
-    # Tabella HTML
-    t_html = doc.add_table(rows=1, cols=2)
-    t_html.style = "Table Grid"
-    t_html.cell(0,0).text = "Block"
-    t_html.cell(0,1).text = "⭐ HTML Output ⭐"
-    
+    # Structure of content
+    p = doc.add_paragraph("Structure of content:")
+    p.runs[0].bold = True
+    for l in build_structure(parsed["body"]):
+        doc.add_paragraph(l)
+
+    doc.add_paragraph("")
+    doc.add_paragraph("")
+
+    # HTML Output table
+    t2 = doc.add_table(rows=1, cols=2)
+    t2.style = "Table Grid"
+    set_cell_text(t2.cell(0,0), "Block", bold=True)
+    set_cell_text(t2.cell(0,1), "⭐ HTML Output ⭐", bold=True)
+
     for item in parsed["body"]:
-        row = t_html.add_row().cells
+        row = t2.add_row().cells
         row[0].text = item["block"]
-        row[1].text = item["html"] # Inseriamo il codice HTML come testo piano
+        row[1].add_paragraph(item["html"])
 
     doc.save(str(out))
+
+
+# =========================
+# Streamlit helper
+# =========================
+
+def convert_uploaded_file(uploaded_file):
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        inp = d / uploaded_file.name
+        out = d / f"output_{uploaded_file.name}"
+        inp.write_bytes(uploaded_file.read())
+        parsed = parse_input_docx(inp)
+        write_output_docx(parsed, out)
+        final = Path(tempfile.gettempdir()) / out.name
+        final.write_bytes(out.read_bytes())
+        return final
