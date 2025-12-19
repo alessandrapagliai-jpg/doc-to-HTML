@@ -50,10 +50,10 @@ def html_entities(s: str) -> str:
     s = html.escape(s, quote=False)
 
     replacements = {
-        "’": "&rsquo;",
-        "‘": "&lsquo;",
-        "“": "&ldquo;",
-        "”": "&rdquo;",
+        "'": "&rsquo;",
+        "'": "&lsquo;",
+        """: "&ldquo;",
+        """: "&rdquo;",
         "–": "&ndash;",
         "—": "&mdash;",
         "…": "&hellip;",
@@ -75,6 +75,17 @@ def html_entities(s: str) -> str:
         s = s.replace(k, v)
 
     return s
+
+
+# =========================
+# Link conversion
+# =========================
+
+def convert_links(text: str) -> str:
+    """Convert markdown-style links [text](url) to HTML <a> tags"""
+    # Pattern per link markdown: [testo](url)
+    pattern = r'\[([^\]]+)\]\(([^\)]+)\)'
+    return re.sub(pattern, r'<a href="\2">\1</a>', text)
 
 
 # =========================
@@ -153,6 +164,9 @@ def parse_input_docx(path: Path) -> Dict[str, Any]:
 
     in_testo = False
     testo_re = re.compile(r"^({})\s*:\s*$".format("|".join(TESTO_KEYS)), re.I)
+    
+    current_section = []  # Accumula paragrafi della sezione corrente
+    first_paragraph_after_testo = True
 
     for line in lines:
         if testo_re.match(line):
@@ -172,17 +186,44 @@ def parse_input_docx(path: Path) -> Dict[str, Any]:
                         meta[out] = val
             continue
 
-        # BODY
-        m = re.match(r"^(.*)\s*\((h2|h3)\)\s*$", line, re.I)
+        # BODY - parsing migliorato
+        # Check se è un header (h2 o h3)
+        m = re.match(r"^(.+?)\s*\((h2|h3)\)\s*$", line, re.I)
         if m:
+            # Se c'è una sezione in corso, salvala prima
+            if current_section:
+                block_type = "Intro" if first_paragraph_after_testo else "✏️ S3"
+                for para in current_section:
+                    body.append({
+                        "block": block_type,
+                        "html": para
+                    })
+                current_section = []
+                first_paragraph_after_testo = False
+            
+            # Aggiungi l'header come nuovo blocco S3
+            header_text = m.group(1).strip()
+            header_level = m.group(2).lower()
+            header_html = f"<{header_level}><strong>{html_entities(header_text)}</strong></{header_level}>"
+            
             body.append({
                 "block": "✏️ S3",
-                "html": f"<h2><strong>{html_entities(m.group(1))}</strong></h2>"
+                "html": header_html
             })
         else:
+            # È un paragrafo normale
+            # Converti i link
+            line_with_links = convert_links(line)
+            para_html = f'<p class="h-text-size-14 h-font-primary">{html_entities(line_with_links)}</p>'
+            current_section.append(para_html)
+    
+    # Salva l'ultima sezione se presente
+    if current_section:
+        block_type = "Intro" if first_paragraph_after_testo else "✏️ S3"
+        for para in current_section:
             body.append({
-                "block": "Intro" if not body else "✏️ S3",
-                "html": f'<p class="h-text-size-14 h-font-primary">{html_entities(line)}</p>'
+                "block": block_type,
+                "html": para
             })
 
     if not h1:
@@ -201,8 +242,10 @@ def parse_input_docx(path: Path) -> Dict[str, Any]:
 
 def build_structure(body: List[Dict[str, str]]) -> List[str]:
     s = ["H1", "Intro"]
-    s3 = sum(1 for b in body if b["block"] == "✏️ S3" and b["html"].startswith("<h2"))
-    s.extend(["✏️ S3"] * s3)
+    # Conta quanti header h2/h3 ci sono
+    header_count = sum(1 for b in body if b["block"] == "✏️ S3" and 
+                      (b["html"].startswith("<h2") or b["html"].startswith("<h3")))
+    s.extend(["✏️ S3"] * header_count)
     return s
 
 
