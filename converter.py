@@ -169,4 +169,153 @@ def paragraph_to_text_with_links(paragraph: Paragraph) -> str:
 # Estrazione RAW
 # =========================
 
-def extra
+def extract_lines_raw(doc: Document) -> List[str]:
+    lines = []
+
+    for block in iter_block_items(doc):
+        if isinstance(block, Paragraph):
+            t = paragraph_to_text_with_links(block)
+            if t:
+                lines.append(t)
+
+        elif isinstance(block, Table):
+            for row in block.rows:
+                for cell in row.cells:
+                    for p in cell.paragraphs:
+                        t = paragraph_to_text_with_links(p)
+                        if t:
+                            lines.append(t)
+
+    return lines
+
+
+# =========================
+# Parsing input DOCX
+# =========================
+
+def parse_input_docx(path: Path) -> Dict[str, Any]:
+    doc = Document(str(path))
+    lines = extract_lines_raw(doc)
+
+    meta = {k: "" for k in OUTPUT_META_LABELS}
+    body: List[Dict[str, str]] = []
+    h1 = ""
+
+    in_testo = False
+    testo_re = re.compile(r"^({})\s*:\s*$".format("|".join(TESTO_KEYS)), re.I)
+
+    for line in lines:
+        if testo_re.match(line):
+            in_testo = True
+            continue
+
+        if not in_testo:
+            m = re.match(r"^([^:]{1,80})\s*:\s*(.*)$", line)
+            if m:
+                key = m.group(1).strip().lower()
+                val = m.group(2).strip()
+                if key in INPUT_KEY_MAP:
+                    out = INPUT_KEY_MAP[key]
+                    if out == "H1":
+                        h1 = val
+                    elif out in meta:
+                        meta[out] = val
+            continue
+
+        m = re.match(r"^(.*)\s*\((h2|h3)\)\s*$", line, re.I)
+        if m:
+            body.append({
+                "block": "✏️ S3",
+                "html": f"<h2><strong>{html_entities(m.group(1))}</strong></h2>"
+            })
+        else:
+            body.append({
+                "block": "Intro" if not body else "✏️ S3",
+                "html": f'<p class="h-text-size-14 h-font-primary">{html_entities(line)}</p>'
+            })
+
+    if not h1:
+        h1 = meta.get("Title") or "Untitled"
+
+    return {
+        "meta": meta,
+        "h1": h1,
+        "body": body
+    }
+
+
+# =========================
+# Structure of content
+# =========================
+
+def build_structure(body: List[Dict[str, str]]) -> List[str]:
+    s = ["H1", "Intro"]
+    s3 = sum(1 for b in body if b["block"] == "✏️ S3" and b["html"].startswith("<h2"))
+    s.extend(["✏️ S3"] * s3)
+    return s
+
+
+# =========================
+# Output DOCX
+# =========================
+
+def write_output_docx(parsed: Dict[str, Any], out: Path):
+    doc = Document()
+    meta = parsed["meta"]
+
+    p = doc.add_paragraph()
+    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    r = p.add_run(meta.get("Title") or parsed["h1"])
+    r.bold = True
+    r.font.size = Pt(20)
+
+    doc.add_paragraph("")
+    doc.add_paragraph("")
+
+    table = doc.add_table(rows=len(OUTPUT_META_LABELS), cols=2)
+    table.style = "Table Grid"
+
+    for i, k in enumerate(OUTPUT_META_LABELS):
+        shade_cell(table.cell(i, 0), "000000")
+        set_cell_text(table.cell(i, 0), k, bold=True, color=RGBColor(255, 255, 255))
+        set_cell_text(table.cell(i, 1), meta.get(k, ""))
+
+    doc.add_paragraph("")
+    doc.add_paragraph("")
+
+    p = doc.add_paragraph("Structure of content:")
+    p.runs[0].bold = True
+    for l in build_structure(parsed["body"]):
+        doc.add_paragraph(l)
+
+    doc.add_paragraph("")
+    doc.add_paragraph("")
+
+    t2 = doc.add_table(rows=1, cols=2)
+    t2.style = "Table Grid"
+    set_cell_text(t2.cell(0, 0), "Block", bold=True)
+    set_cell_text(t2.cell(0, 1), "⭐ HTML Output ⭐", bold=True)
+
+    for item in parsed["body"]:
+        row = t2.add_row().cells
+        row[0].text = item["block"]
+        row[1].add_paragraph(item["html"])
+
+    doc.save(str(out))
+
+
+# =========================
+# Streamlit helper
+# =========================
+
+def convert_uploaded_file(uploaded_file):
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        inp = d / uploaded_file.name
+        out = d / f"output_{uploaded_file.name}"
+        inp.write_bytes(uploaded_file.read())
+        parsed = parse_input_docx(inp)
+        write_output_docx(parsed, out)
+        final = Path(tempfile.gettempdir()) / out.name
+        final.write_bytes(out.read_bytes())
+        return final
