@@ -83,8 +83,8 @@ def html_entities(s: str) -> str:
 
 def convert_links(text: str) -> str:
     """Convert markdown-style links [text](url) to HTML <a> tags"""
-    # Pattern per link markdown: [testo](url)
-    pattern = r'\[([^\]]+)\]\(([^\)]+)\)'
+    # Pattern per link markdown: [testo](url) con possibili decorazioni tipo {.underline}
+    pattern = r'\[([^\]]+?)(?:\{[^\}]*\})?\]\(([^\)]+)\)'
     return re.sub(pattern, r'<a href="\2">\1</a>', text)
 
 
@@ -165,8 +165,9 @@ def parse_input_docx(path: Path) -> Dict[str, Any]:
     in_testo = False
     testo_re = re.compile(r"^({})\s*:\s*$".format("|".join(TESTO_KEYS)), re.I)
     
-    current_section = []  # Accumula paragrafi della sezione corrente
-    first_paragraph_after_testo = True
+    intro_paragraphs = []  # Paragrafi dell'intro
+    current_section_lines = []  # Linee della sezione corrente (header + paragrafi)
+    found_first_header = False
 
     for line in lines:
         if testo_re.match(line):
@@ -186,44 +187,65 @@ def parse_input_docx(path: Path) -> Dict[str, Any]:
                         meta[out] = val
             continue
 
-        # BODY - parsing migliorato
+        # BODY - logica corretta
         # Check se è un header (h2 o h3)
         m = re.match(r"^(.+?)\s*\((h2|h3)\)\s*$", line, re.I)
+        
         if m:
-            # Se c'è una sezione in corso, salvala prima
-            if current_section:
-                block_type = "Intro" if first_paragraph_after_testo else "✏️ S3"
-                for para in current_section:
+            # Abbiamo trovato un header
+            
+            # Se ci sono paragrafi intro, salvali
+            if not found_first_header and intro_paragraphs:
+                for para in intro_paragraphs:
                     body.append({
-                        "block": block_type,
+                        "block": "Intro",
                         "html": para
                     })
-                current_section = []
-                first_paragraph_after_testo = False
+                intro_paragraphs = []
             
-            # Aggiungi l'header come nuovo blocco S3
+            # Se c'è una sezione precedente, salvala
+            if current_section_lines:
+                for html_line in current_section_lines:
+                    body.append({
+                        "block": "✏️ S3",
+                        "html": html_line
+                    })
+                current_section_lines = []
+            
+            found_first_header = True
+            
+            # Crea l'header per la nuova sezione
             header_text = m.group(1).strip()
             header_level = m.group(2).lower()
             header_html = f"<{header_level}><strong>{html_entities(header_text)}</strong></{header_level}>"
+            current_section_lines.append(header_html)
             
-            body.append({
-                "block": "✏️ S3",
-                "html": header_html
-            })
         else:
             # È un paragrafo normale
-            # Converti i link
             line_with_links = convert_links(line)
             para_html = f'<p class="h-text-size-14 h-font-primary">{html_entities(line_with_links)}</p>'
-            current_section.append(para_html)
+            
+            if not found_first_header:
+                # Siamo ancora nell'intro
+                intro_paragraphs.append(para_html)
+            else:
+                # Siamo dentro una sezione S3
+                current_section_lines.append(para_html)
     
-    # Salva l'ultima sezione se presente
-    if current_section:
-        block_type = "Intro" if first_paragraph_after_testo else "✏️ S3"
-        for para in current_section:
+    # Salva intro se non abbiamo mai trovato header
+    if not found_first_header and intro_paragraphs:
+        for para in intro_paragraphs:
             body.append({
-                "block": block_type,
+                "block": "Intro",
                 "html": para
+            })
+    
+    # Salva l'ultima sezione S3 se presente
+    if current_section_lines:
+        for html_line in current_section_lines:
+            body.append({
+                "block": "✏️ S3",
+                "html": html_line
             })
 
     if not h1:
@@ -241,7 +263,13 @@ def parse_input_docx(path: Path) -> Dict[str, Any]:
 # =========================
 
 def build_structure(body: List[Dict[str, str]]) -> List[str]:
-    s = ["H1", "Intro"]
+    s = ["H1"]
+    
+    # Aggiungi Intro se presente
+    has_intro = any(b["block"] == "Intro" for b in body)
+    if has_intro:
+        s.append("Intro")
+    
     # Conta quanti header h2/h3 ci sono
     header_count = sum(1 for b in body if b["block"] == "✏️ S3" and 
                       (b["html"].startswith("<h2") or b["html"].startswith("<h3")))
