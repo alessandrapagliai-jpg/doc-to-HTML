@@ -148,8 +148,10 @@ def parse_input_docx(path: Path) -> Dict[str, Any]:
     lines = extract_lines_raw(doc)
 
     meta = {k: "" for k in OUTPUT_META_LABELS}
-    body: List[Dict[str, str]] = []
     h1 = ""
+
+    sections: List[Dict[str, Any]] = []
+    current_section: Dict[str, Any] | None = None
 
     in_testo = False
     testo_re = re.compile(r"^({})\s*:\s*$".format("|".join(TESTO_KEYS)), re.I)
@@ -159,6 +161,7 @@ def parse_input_docx(path: Path) -> Dict[str, Any]:
             in_testo = True
             continue
 
+        # META
         if not in_testo:
             m = re.match(r"^([^:]{1,80})\s*:\s*(.*)$", line)
             if m:
@@ -172,18 +175,38 @@ def parse_input_docx(path: Path) -> Dict[str, Any]:
                         meta[out] = val
             continue
 
-        # BODY
+        # BODY — nuovo ✏️ S3 su h2/h3
         m = re.match(r"^(.*)\s*\((h2|h3)\)\s*$", line, re.I)
         if m:
-            body.append({
+            if current_section:
+                sections.append(current_section)
+
+            tag = m.group(2).lower()
+            title = html_entities(m.group(1).strip())
+
+            current_section = {
                 "block": "✏️ S3",
-                "html": f"<h2><strong>{html_entities(m.group(1))}</strong></h2>"
-            })
+                "items": [f"<{tag}>{title}</{tag}>"]
+            }
+            continue
+
+        # BODY — paragrafi
+        p_html = f'<p class="h-text-size-14 h-font-primary">{html_entities(line)}</p>'
+
+        if current_section is None:
+            # Intro come sezione unica
+            if not sections or sections[-1]["block"] != "Intro":
+                sections.append({
+                    "block": "Intro",
+                    "items": [p_html]
+                })
+            else:
+                sections[-1]["items"].append(p_html)
         else:
-            body.append({
-                "block": "Intro" if not body else "✏️ S3",
-                "html": f'<p class="h-text-size-14 h-font-primary">{html_entities(line)}</p>'
-            })
+            current_section["items"].append(p_html)
+
+    if current_section:
+        sections.append(current_section)
 
     if not h1:
         h1 = meta.get("Title") or "Untitled"
@@ -191,7 +214,7 @@ def parse_input_docx(path: Path) -> Dict[str, Any]:
     return {
         "meta": meta,
         "h1": h1,
-        "body": body
+        "sections": sections
     }
 
 
@@ -199,10 +222,10 @@ def parse_input_docx(path: Path) -> Dict[str, Any]:
 # Structure of content
 # =========================
 
-def build_structure(body: List[Dict[str, str]]) -> List[str]:
+def build_structure(sections: List[Dict[str, Any]]) -> List[str]:
     s = ["H1", "Intro"]
-    s3 = sum(1 for b in body if b["block"] == "✏️ S3" and b["html"].startswith("<h2"))
-    s.extend(["✏️ S3"] * s3)
+    s3_count = sum(1 for sec in sections if sec["block"] == "✏️ S3")
+    s.extend(["✏️ S3"] * s3_count)
     return s
 
 
@@ -230,7 +253,7 @@ def write_output_docx(parsed: Dict[str, Any], out: Path):
 
     for i, k in enumerate(OUTPUT_META_LABELS):
         shade_cell(table.cell(i, 0), "000000")
-        set_cell_text(table.cell(i, 0), k, bold=True, color=RGBColor(255,255,255))
+        set_cell_text(table.cell(i, 0), k, bold=True, color=RGBColor(255, 255, 255))
         set_cell_text(table.cell(i, 1), meta.get(k, ""))
 
     doc.add_paragraph("")
@@ -239,7 +262,7 @@ def write_output_docx(parsed: Dict[str, Any], out: Path):
     # Structure of content
     p = doc.add_paragraph("Structure of content:")
     p.runs[0].bold = True
-    for l in build_structure(parsed["body"]):
+    for l in build_structure(parsed["sections"]):
         doc.add_paragraph(l)
 
     doc.add_paragraph("")
@@ -248,13 +271,18 @@ def write_output_docx(parsed: Dict[str, Any], out: Path):
     # HTML Output table
     t2 = doc.add_table(rows=1, cols=2)
     t2.style = "Table Grid"
-    set_cell_text(t2.cell(0,0), "Block", bold=True)
-    set_cell_text(t2.cell(0,1), "⭐ HTML Output ⭐", bold=True)
+    set_cell_text(t2.cell(0, 0), "Block", bold=True)
+    set_cell_text(t2.cell(0, 1), "⭐ HTML Output ⭐", bold=True)
 
-    for item in parsed["body"]:
+    for sec in parsed["sections"]:
         row = t2.add_row().cells
-        row[0].text = item["block"]
-        row[1].add_paragraph(item["html"])
+        row[0].text = sec["block"]
+
+        cell = row[1]
+        cell.text = ""
+
+        for html_block in sec["items"]:
+            cell.add_paragraph(html_block)
 
     doc.save(str(out))
 
